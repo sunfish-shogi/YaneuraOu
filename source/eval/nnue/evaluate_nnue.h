@@ -79,7 +79,14 @@ class Position;
 
 namespace Eval::NNUE {
 
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+#if !defined(SFNNwoPSQT)
+#error ENABLE_SFNN_16BIT_WEIGHT requires an SFNN architecture
+#endif
+	#define EvalFileDefaultName "nn16.bin"
+#else
 	#define EvalFileDefaultName "nn.bin"
+#endif
 
 #if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
 namespace Progress {

@@ -256,6 +256,18 @@ int Parameters::BucketIndex(const Position& pos, int bucket_count) const {
     // 評価関数ファイル名
     const char* const kFileName = EvalFileDefaultName;
 
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+    static std::string Nn16Architecture(std::uint32_t qb) {
+        return "ModelType=SFNNWithoutPsqt;Features=" + FeatureTransformer::GetStructureString()
+            + ",Network=SFNN-" + std::to_string(Network::kInputDims)
+            + "{LayerStack=" + std::to_string(kLayerStacks)
+            + "};FCWeightBits=16;QB=" + std::to_string(qb)
+            + ";H1=" + std::to_string(Network::kHidden1Dims)
+            + ";Skip=" + std::to_string(int(Network::kUseShortcut))
+            + ";H2=" + std::to_string(Network::kHidden2Dims);
+    }
+#endif
+
     // 評価関数の構造を表す文字列を取得する
     std::string GetArchitectureString() {
         const std::string base = "Features=" + FeatureTransformer::GetStructureString() +
@@ -302,6 +314,20 @@ namespace {
 		std::string architecture;
 		Tools::Result result = ReadHeader(stream, &hash_value, &architecture, nullptr);
 		if (result.is_not_ok()) return result;
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+        const auto qb = read_little_endian<std::uint32_t>(stream);
+        if (!stream) return Tools::ResultCode::FileReadError;
+        for (auto& network : tmp->network)
+            if (!network.SetWeightScale(qb)) {
+                sync_cout << "info string Invalid nn16 QB: " << qb << sync_endl;
+                return Tools::ResultCode::FileMismatch;
+            }
+        if (hash_value != kHashValue || architecture != Nn16Architecture(qb)) {
+            sync_cout << "info string nn16 architecture mismatch: " << architecture
+                      << " expected " << Nn16Architecture(qb) << sync_endl;
+            return Tools::ResultCode::FileMismatch;
+        }
+#endif
 		if (hash_value != kHashValue) {
 			sync_cout << "info string Warning: NNUE hash mismatch: expected " << kHashValue
 				<< " got " << hash_value
@@ -383,7 +409,14 @@ namespace {
     	}
     // 評価関数パラメータを書き込む
     bool WriteParameters(std::ostream& stream) {
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+        const auto qb = networks().network[0].weight_scale;
+        if (!WriteHeader(stream, kHashValue, Nn16Architecture(qb))) return false;
+        for (int i = 0; i < 4; ++i)
+            stream.put(static_cast<char>((qb >> (8 * i)) & 255));
+#else
         if (!WriteHeader(stream, kHashValue, GetArchitectureString())) return false;
+#endif
         if (!Detail::WriteParameters<FeatureTransformer>(stream, networks().feature_transformer)) return false;
         for (int i = 0; i < kLayerStacks; ++i) {
             if (!Detail::WriteParameters<Network>(stream, networks().network[i])) return false;
@@ -749,7 +782,12 @@ namespace {
         // しかし、教師生成時などdepth固定で探索するときに探索から戻ってこなくなるので
         // そのスレッドの計算時間を無駄にする。またdepth固定対局でtime-outするようになる。
 
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+        auto score = static_cast<Value>(std::clamp<std::int64_t>(
+            output[0] / FV_SCALE, -VALUE_MAX_EVAL, VALUE_MAX_EVAL));
+#else
         auto score = static_cast<Value>(output[0] / FV_SCALE);
+#endif
 
         // 1) ここ、下手にclipすると学習時には影響があるような気もするが…。
         // 2) accumulator.scoreは、差分計算の時に用いないので書き換えて問題ない。
